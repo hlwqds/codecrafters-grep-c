@@ -1,11 +1,23 @@
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+bool match_digit(const char *input_line) {
+    while (*input_line) {
+        if (isdigit(*input_line)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool match_pattern(const char* input_line, const char* pattern) {
     if (strlen(pattern) == 1) {
         return strchr(input_line, pattern[0]) != NULL;
+    } else if (strcmp(pattern, "\\d")) {
+        return match_digit(input_line);
     } else {
         fprintf(stderr, "Unhandled pattern %s\n", pattern);
         exit(1);
@@ -33,7 +45,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // TODO: Uncomment the code below to pass the first stage
     char input_line[1024];
     if (fgets(input_line, sizeof(input_line), stdin) == NULL) {
         return 1;
