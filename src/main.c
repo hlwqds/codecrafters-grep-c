@@ -13,6 +13,7 @@ typedef enum {
     PatternTypeGroup,
     PatternTypeGroupReverse,
     PatternTypeOneMoreTime,
+    PatternTypeZeroOrMore,
     PatternTypeEnd,
     PatternTypeMax,
 } PatternType;
@@ -82,6 +83,11 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
                 chain[chain_size_t - 1].type = PatternTypeOneMoreTime;
                 pattern++;
             }
+        } else if (*pattern == '?') {
+            if (chain_size_t > 0) {
+                chain[chain_size_t - 1].type = PatternTypeZeroOrMore;
+                pattern++;
+            }           
         } else {
             chain[chain_size_t].type = PatternTypeChar;
             chain[chain_size_t].basetype = chain[chain_size_t].type;
@@ -95,7 +101,7 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
 
 static void free_chain(Pattern *chain, size_t chain_size) {
     for (int i = 0; i < chain_size; i++) {
-        if (chain[i].type == PatternTypeGroup || chain[i].type == PatternTypeGroupReverse) {
+        if (chain[i].basetype == PatternTypeGroup || chain[i].basetype == PatternTypeGroupReverse) {
             free(chain[i].v.group);
         }
     }
@@ -156,6 +162,13 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
                     return res;
                 }
             }
+            break;
+        case PatternTypeZeroOrMore:
+            res = match_chain_start(input_line, chain + 1, chain_size - 1);
+            if (res) {
+                return res;
+            }
+            res = match_chain_base_type(*input_line, chain);
             break;
         default:
             res = match_chain_base_type(*input_line, chain);
