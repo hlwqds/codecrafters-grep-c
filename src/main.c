@@ -131,8 +131,18 @@ bool match_chain(const char *input_line, Pattern *chain, size_t chain_size) {
 
 bool match_pattern(const char* input_line, const char* pattern) {
     size_t chain_size;
+    bool res = false;
+    bool anchor = false;
+    if (*pattern == '^') {
+        pattern++;
+        anchor = true;
+    }
     Pattern *chain = parse_pattern_chain(pattern, &chain_size);
-    bool res = match_chain(input_line, chain, chain_size);
+    if (anchor) {
+        res = match_chain_start(input_line, chain, chain_size);
+    } else {
+        res = match_chain(input_line, chain, chain_size);
+    }
     free_chain(chain, chain_size);
     return res;
 }
