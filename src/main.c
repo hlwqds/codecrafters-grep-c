@@ -13,7 +13,8 @@ typedef enum {
     PatternTypeGroup,
     PatternTypeGroupReverse,
     PatternTypeOneMoreTime,
-    PatternTypeZeroOrMore,
+    PatternTypeZeroOrOne,
+    PatternTypeWildcard,
     PatternTypeEnd,
     PatternTypeMax,
 } PatternType;
@@ -85,9 +86,13 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
             }
         } else if (*pattern == '?') {
             if (chain_size_t > 0) {
-                chain[chain_size_t - 1].type = PatternTypeZeroOrMore;
+                chain[chain_size_t - 1].type = PatternTypeZeroOrOne;
                 pattern++;
             }           
+        } else if (*pattern == '.') {
+            chain[chain_size_t].type = PatternTypeWildcard;
+            chain[chain_size_t].basetype = chain[chain_size_t].type;
+            pattern++;
         } else {
             chain[chain_size_t].type = PatternTypeChar;
             chain[chain_size_t].basetype = chain[chain_size_t].type;
@@ -126,6 +131,9 @@ bool match_chain_base_type(char ch, Pattern *chain) {
         case PatternTypeWord:
             res = isalnum(ch) || ch == '_';
             break;
+        case PatternTypeWildcard:
+            res = true;
+            break;
         default:
             break;
     }
@@ -163,7 +171,7 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
                 }
             }
             break;
-        case PatternTypeZeroOrMore:
+        case PatternTypeZeroOrOne:
             res = match_chain_start(input_line, chain + 1, chain_size - 1);
             if (res) {
                 return res;
