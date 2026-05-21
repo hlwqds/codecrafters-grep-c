@@ -13,12 +13,23 @@ bool match_digit(const char *input_line) {
     return false;
 }
 
+bool match_alpha_number(const char *input_line) {
+    while (*input_line) {
+        if (*input_line == '_' || isalnum(*input_line++)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool match_pattern(const char* input_line, const char* pattern) {
     if (strlen(pattern) == 1) {
         return strchr(input_line, pattern[0]) != NULL;
     } else if (strcmp(pattern, "\\d") == 0) {
         return match_digit(input_line);
-    } else {
+    } else if (strcmp(pattern, "\\w") == 0) {
+        return match_alpha_number(input_line);
+    } {
         fprintf(stderr, "Unhandled pattern %s\n", pattern);
         exit(1);
     }
