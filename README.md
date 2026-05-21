@@ -1,0 +1,38 @@
+[![progress-banner](https://backend.codecrafters.io/progress/grep/f5f12245-3b80-4c04-982e-27c5470b8531)](https://app.codecrafters.io/users/hlwqds?r=2qF)
+
+This is a starting point for C solutions to the
+["Build Your Own grep" Challenge](https://app.codecrafters.io/courses/grep/overview).
+
+[Regular expressions](https://en.wikipedia.org/wiki/Regular_expression)
+(Regexes, for short) are patterns used to match character combinations in
+strings. [`grep`](https://en.wikipedia.org/wiki/Grep) is a CLI tool for
+searching using Regexes.
+
+In this challenge you'll build your own implementation of `grep`. Along the way
+we'll learn about Regex syntax, how parsers/lexers work, and how regular
+expressions are evaluated.
+
+**Note**: If you're viewing this repo on GitHub, head over to
+[codecrafters.io](https://codecrafters.io) to try the challenge.
+
+# Passing the first stage
+
+The entry point for your `grep` implementation is in `src/main.c`. Study and
+uncomment the relevant code, and then run the command below to execute the tests
+on our servers:
+
+```sh
+codecrafters submit
+```
+
+Time to move on to the next stage!
+
+# Stage 2 & beyond
+
+Note: This section is for stages 2 and beyond.
+
+1. Ensure you have `cmake` installed locally
+1. Run `./your_program.sh` to run your program, which is implemented in
+   `src/main.c`.
+1. Run `codecrafters submit` to submit your solution to CodeCrafters. Test
+   output will be streamed to your terminal.
