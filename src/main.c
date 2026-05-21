@@ -39,9 +39,9 @@ bool contains(const char *group, char c) {
     return false;   
 }
 
-bool match_group(const char *input_line, const char *group) {
+bool match_group(const char *input_line, const char *group, bool reverse) {
     while (*input_line) {
-        if (contains(group, *input_line++)) {
+        if (contains(group, *input_line++) ^ reverse) {
             return true;
         }
     }
@@ -56,9 +56,12 @@ bool match_pattern(const char* input_line, const char* pattern) {
     } else if (strcmp(pattern, "\\w") == 0) {
         return match_alpha_number(input_line);
     } else if (start_with(pattern, '[') && end_with(pattern, ']')) {
+        bool reverse = (pattern[1] == '^');
         char *group = calloc(1, strlen(pattern));
-        strncpy(group, pattern+ 1, strlen(pattern) - 2);
-        bool res = match_group(input_line, group);
+        int group_len = reverse ? strlen(pattern) - 3 : strlen(pattern) - 2;
+        const char *tmp = reverse ? pattern + 2 : pattern + 1;
+        strncpy(group, tmp, group_len);
+        bool res = match_group(input_line, group, reverse);
         free(group);
         return res;
     } else {
