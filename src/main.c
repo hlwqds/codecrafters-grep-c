@@ -12,12 +12,14 @@ typedef enum {
     PatternTypeWord,
     PatternTypeGroup,
     PatternTypeGroupReverse,
+    PatternTypeOneMoreTime,
     PatternTypeEnd,
     PatternTypeMax,
 } PatternType;
 
 typedef struct {
     PatternType type;
+    PatternType basetype;
     union {
        char ch;
        char *group;
@@ -44,11 +46,14 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         }
         if (strncmp(pattern, "\\d", 2) == 0) {
             pattern += 2;
+            chain[chain_size_t].basetype = PatternTypeDigit;
             chain[chain_size_t++].type = PatternTypeDigit;
         } else if (strncmp(pattern, "\\w", 2) == 0) {
             pattern += 2;
+            chain[chain_size_t].basetype = PatternTypeWord;
             chain[chain_size_t++].type = PatternTypeWord;
         } else if (*pattern == '$' && pattern[1] == '\0') {
+            chain[chain_size_t].basetype = PatternTypeEnd;
             chain[chain_size_t++].type = PatternTypeEnd;
             pattern++;
         } else if (pattern[0] == '[') {
@@ -68,11 +73,18 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
                 char *group = calloc(1, group_len + 1);
                 memcpy(group, group_s, group_len);
                 chain[chain_size_t].type = reverse ? PatternTypeGroupReverse : PatternTypeGroup;
+                chain[chain_size_t].basetype = chain[chain_size_t].type;
                 chain[chain_size_t++].v.group = group;
+                pattern++;
+            }
+        } else if (*pattern == '+') {
+            if (chain_size_t > 0) {
+                chain[chain_size_t - 1].type = PatternTypeOneMoreTime;
                 pattern++;
             }
         } else {
             chain[chain_size_t].type = PatternTypeChar;
+            chain[chain_size_t].basetype = chain[chain_size_t].type;
             chain[chain_size_t++].v.ch = *pattern;
             pattern++;
         }
@@ -90,6 +102,30 @@ static void free_chain(Pattern *chain, size_t chain_size) {
     free(chain);
 }
 
+bool match_chain_base_type(char ch, Pattern *chain) {
+    bool res = false;
+    switch (chain->basetype) {
+        case PatternTypeChar:
+            res = (chain->v.ch == ch);
+            break;
+        case PatternTypeDigit:
+            res = isdigit(ch);
+            break;
+        case PatternTypeGroup:
+            res = contains(chain->v.group, ch);
+            break;
+        case PatternTypeGroupReverse:
+            res = !contains(chain->v.group, ch);
+            break;
+        case PatternTypeWord:
+            res = isalnum(ch) || ch == '_';
+            break;
+        default:
+            break;
+    }
+    return res;   
+}
+
 bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size) {
     if (chain_size == 0) {
         return true;
@@ -102,22 +138,27 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
     }
     bool res = false;
     switch (chain->type) {
-        case PatternTypeChar:
-            res = (chain->v.ch == *input_line);
-            break;
-        case PatternTypeDigit:
-            res = isdigit(*input_line);
-            break;
-        case PatternTypeGroup:
-            res = contains(chain->v.group, *input_line);
-            break;
-        case PatternTypeGroupReverse:
-            res = !contains(chain->v.group, *input_line);
-            break;
-        case PatternTypeWord:
-            res = isalnum(*input_line) || *input_line == '_';
+        case PatternTypeOneMoreTime:
+            res = match_chain_base_type(*input_line++, chain);
+            if (!res) {
+                break;
+            }
+            const char *start_t = input_line;
+            while (*input_line) {
+                res = match_chain_base_type(*input_line++, chain);
+                if (!res) {
+                    break;
+                }
+            }
+            while (input_line >= start_t) {
+                res = match_chain_start(input_line--, chain + 1, chain_size - 1);
+                if (res) {
+                    return res;
+                }
+            }
             break;
         default:
+            res = match_chain_base_type(*input_line, chain);
             break;
     }
     if (!res) {
