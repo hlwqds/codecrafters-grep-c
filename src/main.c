@@ -1,36 +1,29 @@
 #include <ctype.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-bool match_digit(const char *input_line) {
-    while (*input_line) {
-        if (isdigit(*input_line++)) {
-            return true;
-        }
-    }
-    return false;
-}
 
-bool match_alpha_number(const char *input_line) {
-    while (*input_line) {
-        if (*input_line == '_' || isalnum(*input_line++)) {
-            return true;
-        }
-    }
-    return false;
-}
+typedef enum {
+    PatternTypeChar,
+    PatternTypeDigit,
+    PatternTypeWord,
+    PatternTypeGroup,
+    PatternTypeGroupReverse,
+    PatternTypeMax,
+} PatternType;
 
-bool start_with(const char *input_line, char c) {
-    return input_line[0] == c;
-}
+typedef struct {
+    PatternType type;
+    union {
+       char ch;
+       char *group;
+    } v;
+} Pattern;
 
-bool end_with(const char *input_line, char c) {
-    return input_line[strlen(input_line) - 1] == c;
-}
-
-bool contains(const char *group, char c) {
+static bool contains(const char *group, char c) {
     while (*group) {
         if (c == *group++) {
             return true;
@@ -39,9 +32,97 @@ bool contains(const char *group, char c) {
     return false;   
 }
 
-bool match_group(const char *input_line, const char *group, bool reverse) {
-    while (*input_line) {
-        if (contains(group, *input_line++) ^ reverse) {
+Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
+    size_t chain_cap = 4;
+    size_t chain_size_t = 0;
+    Pattern *chain = calloc(chain_cap, sizeof(*chain));
+    while (*pattern) {
+        if (chain_size_t + 1 > chain_cap) {
+            chain_cap *= 2;
+            chain = realloc(chain, chain_cap * sizeof(*chain));
+        }
+        if (strncmp(pattern, "\\d", 2) == 0) {
+            pattern += 2;
+            chain[chain_size_t++].type = PatternTypeDigit;
+        } else if (strncmp(pattern, "\\w", 2) == 0) {
+            pattern += 2;
+            chain[chain_size_t++].type = PatternTypeWord;
+        } else if (pattern[0] == '[') {
+            ++pattern;
+            bool reverse = false;
+            if (*pattern == '^') {
+                reverse = true;
+                pattern++;
+            }
+            const char *group_s = pattern;
+            size_t group_len = 0;
+            while (*pattern && *pattern != ']') {
+                pattern++;
+            }
+            if (*pattern == ']') {
+                group_len = pattern - group_s;
+                char *group = calloc(1, group_len + 1);
+                memcpy(group, group_s, group_len);
+                chain[chain_size_t].type = reverse ? PatternTypeGroupReverse : PatternTypeGroup;
+                chain[chain_size_t++].v.group = group;
+                pattern++;
+            }
+        } else {
+            chain[chain_size_t].type = PatternTypeChar;
+            chain[chain_size_t++].v.ch = *pattern;
+            pattern++;
+        }
+    }
+    *chain_size = chain_size_t;
+    return chain;
+}
+
+static void free_chain(Pattern *chain, size_t chain_size) {
+    for (int i = 0; i < chain_size; i++) {
+        if (chain[i].type == PatternTypeGroup || chain[i].type == PatternTypeGroupReverse) {
+            free(chain[i].v.group);
+        }
+    }
+    free(chain);
+}
+
+bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size) {
+    if (chain_size == 0) {
+        return true;
+    }
+    if (!*input_line) {
+        return false;
+    }
+    bool res = false;
+    switch (chain->type) {
+        case PatternTypeChar:
+            res = (chain->v.ch == *input_line);
+            break;
+        case PatternTypeDigit:
+            res = isdigit(*input_line);
+            break;
+        case PatternTypeGroup:
+            res = contains(chain->v.group, *input_line);
+            break;
+        case PatternTypeGroupReverse:
+            res = !contains(chain->v.group, *input_line);
+            break;
+        case PatternTypeWord:
+            res = isalnum(*input_line) || *input_line == '_';
+            break;
+        default:
+            break;
+    }
+    if (!res) {
+        return res;
+    }
+    return match_chain_start(input_line + 1, chain + 1, chain_size - 1);
+}
+
+bool match_chain(const char *input_line, Pattern *chain, size_t chain_size) {
+    int input_len = strlen(input_line);
+    for (int i = 0; i < input_len - chain_size + 1; i++) {
+        if (match_chain_start(input_line + i, chain, chain_size)) {
             return true;
         }
     }
@@ -49,26 +130,11 @@ bool match_group(const char *input_line, const char *group, bool reverse) {
 }
 
 bool match_pattern(const char* input_line, const char* pattern) {
-    if (strlen(pattern) == 1) {
-        return strchr(input_line, pattern[0]) != NULL;
-    } else if (strcmp(pattern, "\\d") == 0) {
-        return match_digit(input_line);
-    } else if (strcmp(pattern, "\\w") == 0) {
-        return match_alpha_number(input_line);
-    } else if (start_with(pattern, '[') && end_with(pattern, ']')) {
-        bool reverse = (pattern[1] == '^');
-        char *group = calloc(1, strlen(pattern));
-        int group_len = reverse ? strlen(pattern) - 3 : strlen(pattern) - 2;
-        const char *tmp = reverse ? pattern + 2 : pattern + 1;
-        strncpy(group, tmp, group_len);
-        bool res = match_group(input_line, group, reverse);
-        free(group);
-        return res;
-    } else {
-        fprintf(stderr, "Unhandled pattern %s\n", pattern);
-        exit(1);
-    }
-    return false;
+    size_t chain_size;
+    Pattern *chain = parse_pattern_chain(pattern, &chain_size);
+    bool res = match_chain(input_line, chain, chain_size);
+    free_chain(chain, chain_size);
+    return res;
 }
 
 int main(int argc, char* argv[]) {
