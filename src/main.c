@@ -34,18 +34,17 @@ int main(int argc, char* argv[]) {
     }
 
     // TODO: Uncomment the code below to pass the first stage
-    //
-    // char input_line[1024];
-    // if (fgets(input_line, sizeof(input_line), stdin) == NULL) {
-    //     return 1;
-    // }
-    // 
-    // // Remove trailing newline
-    // input_line[strcspn(input_line, "\n")] = '\0';
-    // 
-    // if (match_pattern(input_line, pattern)) {
-    //     return 0;
-    // } else {
-    //     return 1;
-    // }
+    char input_line[1024];
+    if (fgets(input_line, sizeof(input_line), stdin) == NULL) {
+        return 1;
+    }
+    
+    // Remove trailing newline
+    input_line[strcspn(input_line, "\n")] = '\0';
+    
+    if (match_pattern(input_line, pattern)) {
+        return 0;
+    } else {
+        return 1;
+    }
 }
