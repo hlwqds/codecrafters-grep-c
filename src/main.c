@@ -12,6 +12,7 @@ typedef enum {
     PatternTypeWord,
     PatternTypeGroup,
     PatternTypeGroupReverse,
+    PatternTypeEnd,
     PatternTypeMax,
 } PatternType;
 
@@ -47,6 +48,9 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         } else if (strncmp(pattern, "\\w", 2) == 0) {
             pattern += 2;
             chain[chain_size_t++].type = PatternTypeWord;
+        } else if (*pattern == '$' && pattern[1] == '\0') {
+            chain[chain_size_t++].type = PatternTypeEnd;
+            pattern++;
         } else if (pattern[0] == '[') {
             ++pattern;
             bool reverse = false;
@@ -90,6 +94,9 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
     if (chain_size == 0) {
         return true;
     }
+    if (chain->type == PatternTypeEnd) {
+        return *input_line == '\0';
+    }
     if (!*input_line) {
         return false;
     }
@@ -121,7 +128,7 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
 
 bool match_chain(const char *input_line, Pattern *chain, size_t chain_size) {
     int input_len = strlen(input_line);
-    for (int i = 0; i < input_len - chain_size + 1; i++) {
+    for (int i = 0; i <= input_len; i++) {
         if (match_chain_start(input_line + i, chain, chain_size)) {
             return true;
         }
@@ -131,13 +138,13 @@ bool match_chain(const char *input_line, Pattern *chain, size_t chain_size) {
 
 bool match_pattern(const char* input_line, const char* pattern) {
     size_t chain_size;
-    bool res = false;
     bool anchor = false;
     if (*pattern == '^') {
-        pattern++;
         anchor = true;
+        pattern++;
     }
     Pattern *chain = parse_pattern_chain(pattern, &chain_size);
+    bool res;
     if (anchor) {
         res = match_chain_start(input_line, chain, chain_size);
     } else {
