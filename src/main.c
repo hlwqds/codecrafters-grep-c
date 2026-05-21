@@ -92,6 +92,7 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         } else if (*pattern == '.') {
             chain[chain_size_t].type = PatternTypeWildcard;
             chain[chain_size_t].basetype = chain[chain_size_t].type;
+            chain_size_t++;
             pattern++;
         } else {
             chain[chain_size_t].type = PatternTypeChar;
