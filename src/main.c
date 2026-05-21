@@ -22,6 +22,32 @@ bool match_alpha_number(const char *input_line) {
     return false;
 }
 
+bool start_with(const char *input_line, char c) {
+    return input_line[0] == c;
+}
+
+bool end_with(const char *input_line, char c) {
+    return input_line[strlen(input_line) - 1] == c;
+}
+
+bool contains(const char *group, char c) {
+    while (*group) {
+        if (c == *group++) {
+            return true;
+        }
+    }
+    return false;   
+}
+
+bool match_group(const char *input_line, const char *group) {
+    while (*input_line) {
+        if (contains(group, *input_line++)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool match_pattern(const char* input_line, const char* pattern) {
     if (strlen(pattern) == 1) {
         return strchr(input_line, pattern[0]) != NULL;
@@ -29,10 +55,17 @@ bool match_pattern(const char* input_line, const char* pattern) {
         return match_digit(input_line);
     } else if (strcmp(pattern, "\\w") == 0) {
         return match_alpha_number(input_line);
-    } {
+    } else if (start_with(pattern, '[') && end_with(pattern, ']')) {
+        char *group = calloc(1, strlen(pattern));
+        strncpy(group, pattern+ 1, strlen(pattern) - 2);
+        bool res = match_group(input_line, group);
+        free(group);
+        return res;
+    } else {
         fprintf(stderr, "Unhandled pattern %s\n", pattern);
         exit(1);
     }
+    return false;
 }
 
 int main(int argc, char* argv[]) {
