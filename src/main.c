@@ -302,8 +302,14 @@ static void print_matched_with_color(bool *matched, const char *input_line) {
 
 bool match_pattern(const char* input_line, const char* pattern, bool only_matching, const char *color) {
     size_t chain_size;
+    bool use_color = false;
     bool *matched = NULL;
     if (strcmp(color, "always") == 0) {
+        use_color = true;
+    } else if (strcmp(color, "auto") == 0) {
+        use_color = isatty(STDOUT_FILENO);
+    }
+    if (use_color) {
         matched = calloc(1, strlen(input_line) * sizeof(*matched));
     }
     Pattern *chain = parse_pattern_chain(pattern, &chain_size);
