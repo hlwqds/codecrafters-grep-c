@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <unistd.h>
 
 typedef enum {
     PatternTypeChar,
@@ -27,6 +27,8 @@ typedef struct {
        char ch;
        char *group;
     } v;
+    const char *match_start;
+    const char *match_end;
 } Pattern;
 
 static bool contains(const char *group, char c) {
@@ -122,6 +124,17 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
     return chain;
 }
 
+static void printf_match_chain(Pattern *chain, size_t chain_size) {
+    for (int i = 0; i < chain_size; i++) {
+        if (chain[i].match_start != NULL) {
+            for (int j = 0; j < chain[i].match_end - chain[i].match_start + 1; j++) {
+                putchar(chain[i].match_start[j]);
+            }
+        }
+    }
+    putchar('\n');
+}
+
 static void free_chain(Pattern *chain, size_t chain_size) {
     for (int i = 0; i < chain_size; i++) {
         if (chain[i].basetype == PatternTypeGroup || chain[i].basetype == PatternTypeGroupReverse || chain[i].basetype == PatternTypeAlternation) {
@@ -185,28 +198,41 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
             return *input_line == '\0';
 
         case PatternTypeZeroOrOne:
-            if (match_chain_start(input_line, chain + 1, chain_size - 1)) return true;
-            if (*input_line && match_chain_base_type(*input_line, chain))
+            if (match_chain_start(input_line, chain + 1, chain_size - 1)) {
+                return true; 
+            }
+            if (*input_line && match_chain_base_type(*input_line, chain)) {
+                chain->match_start = chain->match_end = input_line;
                 return match_chain_start(input_line + 1, chain + 1, chain_size - 1);
+            }
             return false;
 
         case PatternTypeOneMoreTime: {
             if (!*input_line || !match_chain_base_type(*input_line, chain)) return false;
             const char *p = input_line + 1;
             while (*p && match_chain_base_type(*p, chain)) p++;
-            for (; p >= input_line + 1; p--)
+            chain->match_start = input_line;
+            for (; p >= input_line + 1; p--) {
+                chain->match_end = p - 1;
                 if (match_chain_start(p, chain + 1, chain_size - 1)) return true;
+            }
             return false;
         }
 
         case PatternTypeAlternation: {
             const char *next = match_alternation(input_line, chain->v.group);
-            return next ? match_chain_start(next, chain + 1, chain_size - 1) : false;
+            if (next == NULL) {
+                return false;
+            }
+            chain->match_start = input_line;
+            chain->match_end = next - 1;
+            return match_chain_start(next, chain + 1, chain_size - 1);
         }
 
         default:
             if (!*input_line) return false;
             if (!match_chain_base_type(*input_line, chain)) return false;
+            chain->match_start = chain->match_end = input_line;
             return match_chain_start(input_line + 1, chain + 1, chain_size - 1);
     }
 }
@@ -221,7 +247,7 @@ bool match_chain(const char *input_line, Pattern *chain, size_t chain_size) {
     return false;
 }
 
-bool match_pattern(const char* input_line, const char* pattern) {
+bool match_pattern(const char* input_line, const char* pattern, bool only_matching) {
     size_t chain_size;
     bool anchor = false;
     if (*pattern == '^') {
@@ -235,6 +261,13 @@ bool match_pattern(const char* input_line, const char* pattern) {
     } else {
         res = match_chain(input_line, chain, chain_size);
     }
+    if (res) {
+        if (only_matching) {
+            printf_match_chain(chain, chain_size);
+        } else {
+            printf("%s\n", input_line);
+        }
+    }
     free_chain(chain, chain_size);
     return res;
 }
@@ -247,18 +280,22 @@ int main(int argc, char* argv[]) {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     fprintf(stderr, "Logs from your program will appear here\n");
 
-    if (argc != 3) {
-        fprintf(stderr, "Expected two arguments\n");
-        return 1;
-    }
-
-    const char* flag = argv[1];
-    const char* pattern = argv[2];
+    int opt;
+    bool only_matching = false;
+    const char* pattern;
     int res = 1;
 
-    if (strcmp(flag, "-E") != 0) {
-        fprintf(stderr, "Expected first argument to be '-E'\n");
-        return res;
+    while ((opt = getopt(argc, argv, "oE:")) != -1) {
+        switch (opt) {
+            case 'o':
+                only_matching = true;
+                break;
+            case 'E':
+                pattern = optarg;
+                break;
+            default:
+                return 1;
+        }
     }
 
     char input_line[1024];
@@ -270,9 +307,8 @@ int main(int argc, char* argv[]) {
         // Remove trailing newline
         input_line[strcspn(input_line, "\n")] = '\0';
     
-        if (match_pattern(input_line, pattern)) {
+        if (match_pattern(input_line, pattern, only_matching)) {
             res = 0;
-            printf("%s\n", input_line);
         }
     }
     return res;
