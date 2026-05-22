@@ -269,6 +269,7 @@ int main(int argc, char* argv[]) {
     input_line[strcspn(input_line, "\n")] = '\0';
     
     if (match_pattern(input_line, pattern)) {
+        printf("%s\n", input_line);
         return 0;
     } else {
         return 1;
