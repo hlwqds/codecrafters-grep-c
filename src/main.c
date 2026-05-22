@@ -266,13 +266,22 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
 bool match_chain(const char *input_line, Pattern *chain, size_t chain_size, bool only_match, bool *matched) {
     int input_len = strlen(input_line);
     bool res = false;
-    for (int i = 0; i <= input_len; i++) {
+    for (int i = 0; i <= input_len;) {
         if (match_chain_start(input_line + i, input_line, chain, chain_size)) {
             if (only_match) {
                 printf_match_chain(chain, chain_size);
             }
             fill_chain_matched(chain, chain_size, matched, input_line);
+            const char *max_end = input_line + i;
+            for (int j = 0; j < chain_size; j++) {
+                if (chain[j].match_end && chain[j].match_end >= max_end) {
+                    max_end = chain[j].match_end;
+                }
+            }
+            i += max_end - (input_line + i) + 1;
             res = true;
+        } else {
+            i++;
         }
     }
     return res;
