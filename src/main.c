@@ -17,12 +17,9 @@ typedef enum {
     PatternTypeWord,
     PatternTypeGroup,
     PatternTypeGroupReverse,
-    PatternTypeOneMoreTime,
-    PatternTypeZeroOrOne,
+    PatternTypeQuantifier,
     PatternTypeWildcard,
-    PatternTypeZeroOrMore,
     PatternTypeAlternation,
-    PatternTypeExactly,
     PatternTypeStart,
     PatternTypeEnd,
     PatternTypeMax,
@@ -35,7 +32,8 @@ typedef struct {
        char ch;
        char *group;
     } v;
-    int match_times;
+    int min_times;
+    int max_times; // -1 = unlimited
     const char *match_start;
     const char *match_end;
 } Pattern;
@@ -107,13 +105,17 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
             }
         } else if (*pattern == '+') {
             if (chain_size_t > 0) {
-                chain[chain_size_t - 1].type = PatternTypeOneMoreTime;
-                pattern++;
+                chain[chain_size_t - 1].type = PatternTypeQuantifier;
+                chain[chain_size_t - 1].min_times = 1;
+                chain[chain_size_t - 1].max_times = -1;
             }
+            pattern++;
         } else if (*pattern == '?') {
             if (chain_size_t > 0) {
-                chain[chain_size_t - 1].type = PatternTypeZeroOrOne;
-            }           
+                chain[chain_size_t - 1].type = PatternTypeQuantifier;
+                chain[chain_size_t - 1].min_times = 0;
+                chain[chain_size_t - 1].max_times = 1;
+            }
             pattern++;
         } else if (*pattern == '.') {
             chain[chain_size_t].type = PatternTypeWildcard;
@@ -122,7 +124,9 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
             pattern++;
         } else if (*pattern == '*') {
             if (chain_size_t > 0) {
-                chain[chain_size_t - 1].type = PatternTypeZeroOrMore;
+                chain[chain_size_t - 1].type = PatternTypeQuantifier;
+                chain[chain_size_t - 1].min_times = 0;
+                chain[chain_size_t - 1].max_times = -1;
             }
             pattern++;
         } else if (*pattern == '(') {
@@ -143,19 +147,22 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         } else if (*pattern == '{') {
             ++pattern;
             const char *times_s = pattern;
-            size_t times_len = 0;
-            while (*pattern && *pattern != '}') {
-                pattern++;
-            }
-            if (*pattern == '}') {
-                if (chain_size_t > 0) {
-                    times_len = pattern - times_s;
-                    char *times = calloc(1, times_len + 1);
-                    memcpy(times, times_s, times_len);
-                    chain[chain_size_t - 1].type = PatternTypeExactly;
-                    chain[chain_size_t - 1].match_times = atoi(times);
-                    free(times);
+            while (*pattern && *pattern != '}') pattern++;
+            if (*pattern == '}' && chain_size_t > 0) {
+                size_t len = pattern - times_s;
+                char *buf = calloc(1, len + 1);
+                memcpy(buf, times_s, len);
+                char *comma = strchr(buf, ',');
+                if (comma) {
+                    *comma = '\0';
+                    chain[chain_size_t - 1].min_times = atoi(buf);
+                    chain[chain_size_t - 1].max_times = *(comma + 1) ? atoi(comma + 1) : -1;
+                } else {
+                    chain[chain_size_t - 1].min_times = atoi(buf);
+                    chain[chain_size_t - 1].max_times = atoi(buf);
                 }
+                chain[chain_size_t - 1].type = PatternTypeQuantifier;
+                free(buf);
             }
             pattern++;
         } else {
@@ -226,7 +233,7 @@ bool match_chain_base_type(char ch, Pattern *chain) {
         default:
             break;
     }
-    return res;   
+    return res;
 }
 
 const char *match_alternation(const char *input_line, char *alternation) {
@@ -248,6 +255,13 @@ const char *match_alternation(const char *input_line, char *alternation) {
     return NULL;
 }
 
+const char *match_one_unit(const char *input, Pattern *p) {
+    if (p->basetype == PatternTypeAlternation)
+        return match_alternation(input, p->v.group);
+    if (!*input || !match_chain_base_type(*input, p)) return NULL;
+    return input + 1;
+}
+
 bool match_chain_start(const char *input_line, const char *line_start, Pattern *chain, size_t chain_size) {
     if (chain_size == 0) return true;
     chain->match_start = NULL;
@@ -260,56 +274,27 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
         case PatternTypeEnd:
             return *input_line == '\0';
 
-        case PatternTypeZeroOrOne:
-            if (*input_line && match_chain_base_type(*input_line, chain)) {
-                chain->match_start = chain->match_end = input_line;
-                return match_chain_start(input_line + 1, line_start, chain + 1, chain_size - 1);
-            }
-            if (match_chain_start(input_line, line_start, chain + 1, chain_size - 1)) {
-                return true;
-            }
-            return false;
-
-        case PatternTypeOneMoreTime: {
-            if (!*input_line || !match_chain_base_type(*input_line, chain)) return false;
-            const char *p = input_line + 1;
-            while (*p && match_chain_base_type(*p, chain)) p++;
-            chain->match_start = input_line;
-            for (; p >= input_line + 1; p--) {
-                chain->match_end = p - 1;
-                if (match_chain_start(p, line_start, chain + 1, chain_size - 1)) return true;
-            }
-            return false;
-        }
-
-        case PatternTypeExactly: {
+        case PatternTypeQuantifier: {
+            const char *positions[256];
+            int count = 0;
             const char *p = input_line;
-            for (int i = 0; i < chain->match_times; i++) {
-                if (chain->basetype == PatternTypeAlternation) {
-                    const char *next = match_alternation(p, chain->v.group);
-                    if (!next) return false;
-                    p = next;
-                } else {
-                    if (!*p || !match_chain_base_type(*p, chain)) return false;
-                    p++;
-                }
+            int max = (chain->max_times < 0) ? 255 : chain->max_times;
+            for (int i = 0; i < max; i++) {
+                const char *next = match_one_unit(p, chain);
+                if (!next) break;
+                positions[count++] = p;
+                p = next;
             }
-            chain->match_start = input_line;
-            chain->match_end = p - 1;
-            return match_chain_start(p, line_start, chain + 1, chain_size - 1);
-        }
-
-        case PatternTypeZeroOrMore: {
-            const char *p = input_line;
-            while (*p && match_chain_base_type(*p, chain)) p++;
-            for (; p >= input_line; p--) {
-                if (p > input_line) {
+            if (count < chain->min_times) return false;
+            for (int i = count; i >= chain->min_times; i--) {
+                if (i > 0) {
                     chain->match_start = input_line;
                     chain->match_end = p - 1;
                 } else {
                     chain->match_start = NULL;
                 }
                 if (match_chain_start(p, line_start, chain + 1, chain_size - 1)) return true;
+                if (i > 0) p = positions[i - 1];
             }
             return false;
         }
