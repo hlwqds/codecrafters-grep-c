@@ -19,6 +19,7 @@ typedef enum {
     PatternTypeOneMoreTime,
     PatternTypeZeroOrOne,
     PatternTypeWildcard,
+    PatternTypeZeroOrMore,
     PatternTypeAlternation,
     PatternTypeStart,
     PatternTypeEnd,
@@ -116,6 +117,11 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
             chain[chain_size_t].basetype = chain[chain_size_t].type;
             chain_size_t++;
             pattern++;
+        } else if (*pattern == '*') {
+            if (chain_size_t > 0) {
+                chain[chain_size_t - 1].type = PatternTypeZeroOrMore;
+                pattern++;
+            }
         } else if (*pattern == '(') {
             ++pattern;
             const char *alter_s = pattern;
@@ -256,6 +262,21 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
             return false;
         }
 
+        case PatternTypeZeroOrMore: {
+            const char *p = input_line;
+            while (*p && match_chain_base_type(*p, chain)) p++;
+            for (; p >= input_line; p--) {
+                if (p > input_line) {
+                    chain->match_start = input_line;
+                    chain->match_end = p - 1;
+                } else {
+                    chain->match_start = NULL;
+                }
+                if (match_chain_start(p, line_start, chain + 1, chain_size - 1)) return true;
+            }
+            return false;
+        }
+
         case PatternTypeAlternation: {
             const char *next = match_alternation(input_line, chain->v.group);
             if (next == NULL) {
@@ -336,11 +357,10 @@ bool match_pattern(const char* input_line, const char* pattern, GrepOpts *opts) 
     return res;
 }
 
-bool match_pattern_with_fp(FILE *fp, const char* pattern, GrepOpts *opts) {
-    int res = 1;    
+static int grep_stream(FILE *fp, const char *pattern, GrepOpts *opts) {
+    int res = 1;
     char input_line[1024];
-    while (fgets(input_line, sizeof(input_line), fp) != NULL) {
-        // Remove trailing newline
+    while (fgets(input_line, sizeof(input_line), fp)) {
         input_line[strcspn(input_line, "\n")] = '\0';
         if (match_pattern(input_line, pattern, opts)) {
             res = 0;
@@ -351,36 +371,31 @@ bool match_pattern_with_fp(FILE *fp, const char* pattern, GrepOpts *opts) {
 
 static bool is_dir(const char *path) {
     struct stat st;
-    if (stat(path, &st) != 0) {
-        return false;
-    }
+    if (stat(path, &st) != 0) return false;
     return S_ISDIR(st.st_mode);
 }
 
-bool match_pattern_recursive(const char* pattern, GrepOpts *opts) {
-    int res = 1;
-    if (is_dir(opts->filename)) {
-        DIR *dir = opendir(opts->filename);
+static int grep_path(const char *path, const char *pattern, GrepOpts *opts) {
+    if (is_dir(path)) {
+        int res = 1;
+        DIR *dir = opendir(path);
+        if (!dir) return 1;
         struct dirent *entry;
-        char path[PATH_MAX];
-        const char *dirpath = opts->filename;
-        size_t dirlen = strlen(dirpath);
-        if (dirlen > 0 && dirpath[dirlen - 1] == '/') dirlen--;
+        char child[PATH_MAX];
+        size_t dirlen = strlen(path);
+        if (dirlen > 0 && path[dirlen - 1] == '/') dirlen--;
         while ((entry = readdir(dir)) != NULL) {
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
-            snprintf(path, sizeof(path), "%.*s/%s", (int)dirlen, dirpath, entry->d_name);
-            const char *save = opts->filename;
-            opts->filename = path;
-            if (match_pattern_recursive(pattern, opts) == 0) {
-                res = 0;
-            }
-            opts->filename = save;
+            snprintf(child, sizeof(child), "%.*s/%s", (int)dirlen, path, entry->d_name);
+            if (grep_path(child, pattern, opts) == 0) res = 0;
         }
         closedir(dir);
         return res;
     }
-    FILE *fp = fopen(opts->filename, "r");
-    res = match_pattern_with_fp(fp, pattern, opts);
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 1;
+    opts->filename = path;
+    int res = grep_stream(fp, pattern, opts);
     fclose(fp);
     return res;
 }
@@ -391,38 +406,23 @@ static struct option long_options[] = {
 };
 
 int main(int argc, char* argv[]) {
-    // Disable output buffering
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
-
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     fprintf(stderr, "Logs from your program will appear here\n");
 
     int opt;
     GrepOpts opts = {0};
-    const char* pattern;
+    const char *pattern;
     int res = 1;
     const char *color = "never";
-    FILE *fp_s[1] = {stdin};
-    FILE **fp = fp_s;
-    int fp_num = 1;
 
     while ((opt = getopt_long(argc, argv, "orE:", long_options, NULL)) != -1) {
         switch (opt) {
-            case 'o':
-                opts.only_matching = true;
-                break;
-            case 'E':
-                pattern = optarg;
-                break;
-            case 'c':
-                color = optarg;
-                break;
-            case 'r':
-                opts.recursive = true;
-                break;
-            default:
-                return 1;
+            case 'o': opts.only_matching = true; break;
+            case 'E': pattern = optarg; break;
+            case 'c': color = optarg; break;
+            case 'r': opts.recursive = true; break;
+            default: return 1;
         }
     }
 
@@ -432,32 +432,24 @@ int main(int argc, char* argv[]) {
         opts.use_color = isatty(STDOUT_FILENO);
     }
 
-    if (optind < argc) {
-        if (!opts.recursive) {
-            fp_num = argc - optind;
-            fp = malloc(fp_num * sizeof(*fp));
-            for (int i = 0; i < fp_num; i++) {
-                fp[i] = fopen(argv[optind + i], "r");
-            }
-        } else {
-            for (int i = 0; i < argc - optind; i++) {
-                opts.filename = argv[optind + i];
-                if (match_pattern_recursive(pattern, &opts) == 0) {
-                    res = 0;
+    int npaths = argc - optind;
+    if (npaths == 0) {
+        opts.filename = NULL;
+        res = grep_stream(stdin, pattern, &opts);
+    } else {
+        for (int i = 0; i < npaths; i++) {
+            const char *path = argv[optind + i];
+            if (opts.recursive) {
+                if (grep_path(path, pattern, &opts) == 0) res = 0;
+            } else {
+                opts.filename = npaths > 1 ? path : NULL;
+                FILE *fp = fopen(path, "r");
+                if (fp) {
+                    if (grep_stream(fp, pattern, &opts) == 0) res = 0;
+                    fclose(fp);
                 }
             }
-            return res;
         }
-    }
-
-    for (int i = 0; i < fp_num; i++) {
-        opts.filename = (fp_num > 1 && optind < argc) ? argv[optind + i] : NULL;
-        if (match_pattern_with_fp(fp[i], pattern, &opts) == 0) {
-            res = 0;
-        }
-    }
-    if (fp != fp_s) {
-        free(fp);
     }
     return res;
 }
