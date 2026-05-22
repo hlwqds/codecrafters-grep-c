@@ -20,6 +20,7 @@ typedef enum {
     PatternTypeQuantifier,
     PatternTypeWildcard,
     PatternTypeAlternation,
+    PatternTypeBackReference,
     PatternTypeStart,
     PatternTypeEnd,
     PatternTypeMax,
@@ -34,6 +35,7 @@ typedef struct {
     } v;
     int min_times;
     int max_times; // -1 = unlimited
+    int group_num; // 0 = not a capture group, 1-9 = capture group number
     const char *match_start;
     const char *match_end;
 } Pattern;
@@ -45,6 +47,10 @@ typedef struct {
     const char *filename;
     bool *matched;
 } GrepOpts;
+
+const char *capture_group_start[10];
+const char *capture_group_end[10];
+int capture_group_count;
 
 static bool contains(const char *group, char c) {
     while (*group) {
@@ -141,6 +147,7 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
                 char *group = calloc(1, alter_len + 1);
                 memcpy(group, alter_s, alter_len);
                 chain[chain_size_t].type = chain[chain_size_t].basetype = PatternTypeAlternation;
+                chain[chain_size_t].group_num = ++capture_group_count;
                 chain[chain_size_t++].v.group = group;
             }
             pattern++;
@@ -165,6 +172,14 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
                 free(buf);
             }
             pattern++;
+        } else if (*pattern == '\\') {
+            pattern++;
+            if (isdigit(*(pattern))) {
+                chain[chain_size_t].type = PatternTypeBackReference;
+                chain[chain_size_t].basetype = chain[chain_size_t].type;
+                chain[chain_size_t++].v.ch = *pattern;
+                pattern++;
+            }
         } else {
             chain[chain_size_t].type = PatternTypeChar;
             chain[chain_size_t].basetype = chain[chain_size_t].type;
@@ -236,28 +251,38 @@ bool match_chain_base_type(char ch, Pattern *chain) {
     return res;
 }
 
-const char *match_alternation(const char *input_line, char *alternation) {
-    char *prev_s = alternation;
-    int alter_len = strlen(alternation);
-    for (int i = 0; i < alter_len; i++) {
-        if (alternation[i] == '|') {
-            int len = alternation + i - prev_s;
-            if (memcmp(input_line, prev_s, len) == 0) {
-                return input_line + len;
+bool match_chain_start(const char *input_line, const char *line_start, Pattern *chain, size_t chain_size);
+
+const char *match_group(const char *input_line, const char *group_pattern) {
+    int len = strlen(group_pattern);
+    const char *branch_s = group_pattern;
+    for (int i = 0; i <= len; i++) {
+        if (group_pattern[i] == '|' || group_pattern[i] == '\0') {
+            int branch_len = group_pattern + i - branch_s;
+            char *branch = calloc(1, branch_len + 1);
+            memcpy(branch, branch_s, branch_len);
+            size_t sub_size;
+            Pattern *sub = parse_pattern_chain(branch, &sub_size);
+            free(branch);
+            if (match_chain_start(input_line, input_line, sub, sub_size)) {
+                const char *end = input_line;
+                for (int j = 0; j < sub_size; j++) {
+                    if (sub[j].match_end && sub[j].match_end >= end)
+                        end = sub[j].match_end + 1;
+                }
+                free_chain(sub, sub_size);
+                return end;
             }
-            prev_s = alternation + i + 1;
+            free_chain(sub, sub_size);
+            branch_s = group_pattern + i + 1;
         }
-    }
-    int len = alternation + alter_len - prev_s;
-    if (memcmp(input_line, prev_s, len) == 0) {
-        return input_line + len;
     }
     return NULL;
 }
 
 const char *match_one_unit(const char *input, Pattern *p) {
     if (p->basetype == PatternTypeAlternation)
-        return match_alternation(input, p->v.group);
+        return match_group(input, p->v.group);
     if (!*input || !match_chain_base_type(*input, p)) return NULL;
     return input + 1;
 }
@@ -300,13 +325,27 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
         }
 
         case PatternTypeAlternation: {
-            const char *next = match_alternation(input_line, chain->v.group);
+            const char *next = match_group(input_line, chain->v.group);
             if (next == NULL) {
                 return false;
             }
             chain->match_start = input_line;
             chain->match_end = next - 1;
+            if (chain->group_num > 0) {
+                capture_group_start[chain->group_num] = chain->match_start;
+                capture_group_end[chain->group_num] = chain->match_end;
+            }
             return match_chain_start(next, line_start, chain + 1, chain_size - 1);
+        }
+
+        case PatternTypeBackReference: {
+            int n = chain->v.ch - '0';
+            if (!capture_group_start[n]) return false;
+            int len = capture_group_end[n] - capture_group_start[n] + 1;
+            if (memcmp(input_line, capture_group_start[n], len) != 0) return false;
+            chain->match_start = input_line;
+            chain->match_end = input_line + len - 1;
+            return match_chain_start(input_line + len, line_start, chain + 1, chain_size - 1);
         }
 
         default:
@@ -356,6 +395,9 @@ static void print_matched_with_color(bool *matched, const char *input_line) {
 
 bool match_pattern(const char* input_line, const char* pattern, GrepOpts *opts) {
     size_t chain_size;
+    capture_group_count = 0;
+    memset(capture_group_start, 0, sizeof(capture_group_start));
+    memset(capture_group_end, 0, sizeof(capture_group_end));
     if (opts->use_color) {
         opts->matched = calloc(1, strlen(input_line) * sizeof(*opts->matched));
     }
@@ -382,6 +424,7 @@ bool match_pattern(const char* input_line, const char* pattern, GrepOpts *opts) 
 static int grep_stream(FILE *fp, const char *pattern, GrepOpts *opts) {
     int res = 1;
     char input_line[1024];
+    capture_group_count = 0;
     while (fgets(input_line, sizeof(input_line), fp)) {
         input_line[strcspn(input_line, "\n")] = '\0';
         if (match_pattern(input_line, pattern, opts)) {
