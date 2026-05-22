@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 
 typedef enum {
     PatternTypeChar,
@@ -16,6 +17,7 @@ typedef enum {
     PatternTypeZeroOrOne,
     PatternTypeWildcard,
     PatternTypeAlternation,
+    PatternTypeStart,
     PatternTypeEnd,
     PatternTypeMax,
 } PatternType;
@@ -44,6 +46,12 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
     size_t chain_cap = 4;
     size_t chain_size_t = 0;
     Pattern *chain = calloc(chain_cap, sizeof(*chain));
+    if (*pattern == '^') {
+        chain[chain_size_t].type = PatternTypeStart;
+        chain[chain_size_t].basetype = PatternTypeStart;
+        chain_size_t++;
+        pattern++;
+    }
     while (*pattern) {
         if (chain_size_t + 1 > chain_cap) {
             chain_cap *= 2;
@@ -124,6 +132,19 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
     return chain;
 }
 
+static void fill_chain_matched(Pattern *chain, size_t chain_size, bool *matched, const char *ori) {
+    if (matched == NULL) {
+        return;
+    }
+    for (int i = 0; i < chain_size; i++) {
+        if (chain[i].match_start != NULL) {
+            for (int j = 0; j < chain[i].match_end - chain[i].match_start + 1; j++) {
+                matched[chain[i].match_start + j - ori] = true;
+            }
+        }
+    }
+}
+
 static void printf_match_chain(Pattern *chain, size_t chain_size) {
     for (int i = 0; i < chain_size; i++) {
         if (chain[i].match_start != NULL) {
@@ -190,21 +211,25 @@ const char *match_alternation(const char *input_line, char *alternation) {
     return NULL;
 }
 
-bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size) {
+bool match_chain_start(const char *input_line, const char *line_start, Pattern *chain, size_t chain_size) {
     if (chain_size == 0) return true;
     chain->match_start = NULL;
 
     switch (chain->type) {
+        case PatternTypeStart:
+            if (input_line != line_start) return false;
+            return match_chain_start(input_line, line_start, chain + 1, chain_size - 1);
+
         case PatternTypeEnd:
             return *input_line == '\0';
 
         case PatternTypeZeroOrOne:
             if (*input_line && match_chain_base_type(*input_line, chain)) {
                 chain->match_start = chain->match_end = input_line;
-                return match_chain_start(input_line + 1, chain + 1, chain_size - 1);
+                return match_chain_start(input_line + 1, line_start, chain + 1, chain_size - 1);
             }
-            if (match_chain_start(input_line, chain + 1, chain_size - 1)) {
-                return true; 
+            if (match_chain_start(input_line, line_start, chain + 1, chain_size - 1)) {
+                return true;
             }
             return false;
 
@@ -215,7 +240,7 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
             chain->match_start = input_line;
             for (; p >= input_line + 1; p--) {
                 chain->match_end = p - 1;
-                if (match_chain_start(p, chain + 1, chain_size - 1)) return true;
+                if (match_chain_start(p, line_start, chain + 1, chain_size - 1)) return true;
             }
             return false;
         }
@@ -227,55 +252,71 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
             }
             chain->match_start = input_line;
             chain->match_end = next - 1;
-            return match_chain_start(next, chain + 1, chain_size - 1);
+            return match_chain_start(next, line_start, chain + 1, chain_size - 1);
         }
 
         default:
             if (!*input_line) return false;
             if (!match_chain_base_type(*input_line, chain)) return false;
             chain->match_start = chain->match_end = input_line;
-            return match_chain_start(input_line + 1, chain + 1, chain_size - 1);
+            return match_chain_start(input_line + 1, line_start, chain + 1, chain_size - 1);
     }
 }
 
-bool match_chain(const char *input_line, Pattern *chain, size_t chain_size, bool only_match) {
+bool match_chain(const char *input_line, Pattern *chain, size_t chain_size, bool only_match, bool *matched) {
     int input_len = strlen(input_line);
     bool res = false;
     for (int i = 0; i <= input_len; i++) {
-        if (match_chain_start(input_line + i, chain, chain_size)) {
+        if (match_chain_start(input_line + i, input_line, chain, chain_size)) {
             if (only_match) {
                 printf_match_chain(chain, chain_size);
             }
+            fill_chain_matched(chain, chain_size, matched, input_line);
             res = true;
         }
     }
     return res;
 }
 
-bool match_pattern(const char* input_line, const char* pattern, bool only_matching) {
+static void print_matched_with_color(bool *matched, const char *input_line) {
+    int i = 0;
+    while (*input_line != '\0') {
+        if (matched[i] && (i == 0 || !matched[i - 1])) printf("\033[1;31m");
+        if (!matched[i] && i > 0 && matched[i - 1]) printf("\033[0m");
+        putchar(*input_line);
+        input_line++;
+        i++;
+    }
+    if (i > 0 && matched[i - 1]) printf("\033[0m");
+    putchar('\n');
+}
+
+bool match_pattern(const char* input_line, const char* pattern, bool only_matching, const char *color) {
     size_t chain_size;
-    bool anchor = false;
-    if (*pattern == '^') {
-        anchor = true;
-        pattern++;
+    bool *matched = NULL;
+    if (strcmp(color, "always") == 0) {
+        matched = calloc(1, strlen(input_line) * sizeof(*matched));
     }
     Pattern *chain = parse_pattern_chain(pattern, &chain_size);
-    bool res;
-    if (anchor) {
-        res = match_chain_start(input_line, chain, chain_size);
-    } else {
-        res = match_chain(input_line, chain, chain_size, only_matching);
-    }
+    bool res = match_chain(input_line, chain, chain_size, only_matching, matched);
     if (res) {
-        if (!only_matching) {
+        if (only_matching) {
+            // already printed in match_chain
+        } else if (matched != NULL) {
+            print_matched_with_color(matched, input_line);
+        } else {
             printf("%s\n", input_line);
-        } else if (anchor) {
-            printf_match_chain(chain, chain_size);
         }
     }
+    free(matched);
     free_chain(chain, chain_size);
     return res;
 }
+
+static struct option long_options[] = {
+  {"color", required_argument, NULL, 'c'},
+  {0, 0, 0, 0}  
+};
 
 int main(int argc, char* argv[]) {
     // Disable output buffering
@@ -289,14 +330,18 @@ int main(int argc, char* argv[]) {
     bool only_matching = false;
     const char* pattern;
     int res = 1;
+    const char *color = "never";
 
-    while ((opt = getopt(argc, argv, "oE:")) != -1) {
+    while ((opt = getopt_long(argc, argv, "oE:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'o':
                 only_matching = true;
                 break;
             case 'E':
                 pattern = optarg;
+                break;
+            case 'c':
+                color = optarg;
                 break;
             default:
                 return 1;
@@ -312,7 +357,7 @@ int main(int argc, char* argv[]) {
         // Remove trailing newline
         input_line[strcspn(input_line, "\n")] = '\0';
     
-        if (match_pattern(input_line, pattern, only_matching)) {
+        if (match_pattern(input_line, pattern, only_matching, color)) {
             res = 0;
         }
     }
