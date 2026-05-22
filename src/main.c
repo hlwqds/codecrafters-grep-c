@@ -346,6 +346,7 @@ int main(int argc, char* argv[]) {
     const char* pattern;
     int res = 1;
     const char *color = "never";
+    FILE *fp = stdin;
 
     while ((opt = getopt_long(argc, argv, "oE:", long_options, NULL)) != -1) {
         switch (opt) {
@@ -363,9 +364,13 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (optind < argc) {
+        fp = fopen(argv[optind], "r");
+    }
+
     char input_line[1024];
     while (true) {
-        if (fgets(input_line, sizeof(input_line), stdin) == NULL) {
+        if (fgets(input_line, sizeof(input_line), fp) == NULL) {
             return res;
         }
     
