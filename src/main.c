@@ -254,24 +254,26 @@ int main(int argc, char* argv[]) {
 
     const char* flag = argv[1];
     const char* pattern = argv[2];
+    int res = 1;
 
     if (strcmp(flag, "-E") != 0) {
         fprintf(stderr, "Expected first argument to be '-E'\n");
-        return 1;
+        return res;
     }
 
     char input_line[1024];
-    if (fgets(input_line, sizeof(input_line), stdin) == NULL) {
-        return 1;
-    }
+    while (true) {
+        if (fgets(input_line, sizeof(input_line), stdin) == NULL) {
+            return res;
+        }
     
-    // Remove trailing newline
-    input_line[strcspn(input_line, "\n")] = '\0';
+        // Remove trailing newline
+        input_line[strcspn(input_line, "\n")] = '\0';
     
-    if (match_pattern(input_line, pattern)) {
-        printf("%s\n", input_line);
-        return 0;
-    } else {
-        return 1;
+        if (match_pattern(input_line, pattern)) {
+            res = 0;
+            printf("%s\n", input_line);
+        }
     }
+    return res;
 }
