@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <linux/limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -6,6 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 typedef enum {
     PatternTypeChar,
@@ -36,6 +39,7 @@ typedef struct {
 typedef struct {
     bool only_matching;
     bool use_color;
+    bool recursive;
     const char *filename;
     bool *matched;
 } GrepOpts;
@@ -332,6 +336,55 @@ bool match_pattern(const char* input_line, const char* pattern, GrepOpts *opts) 
     return res;
 }
 
+bool match_pattern_with_fp(FILE *fp, const char* pattern, GrepOpts *opts) {
+    int res = 1;    
+    char input_line[1024];
+    while (fgets(input_line, sizeof(input_line), fp) != NULL) {
+        // Remove trailing newline
+        input_line[strcspn(input_line, "\n")] = '\0';
+        if (match_pattern(input_line, pattern, opts)) {
+            res = 0;
+        }
+    }
+    return res;
+}
+
+static bool is_dir(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return false;
+    }
+    return S_ISDIR(st.st_mode);
+}
+
+bool match_pattern_recursive(const char* pattern, GrepOpts *opts) {
+    int res = 1;
+    if (is_dir(opts->filename)) {
+        DIR *dir = opendir(opts->filename);
+        struct dirent *entry;
+        char path[PATH_MAX];
+        const char *dirpath = opts->filename;
+        size_t dirlen = strlen(dirpath);
+        if (dirlen > 0 && dirpath[dirlen - 1] == '/') dirlen--;
+        while ((entry = readdir(dir)) != NULL) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+            snprintf(path, sizeof(path), "%.*s/%s", (int)dirlen, dirpath, entry->d_name);
+            const char *save = opts->filename;
+            opts->filename = path;
+            if (match_pattern_recursive(pattern, opts) == 0) {
+                res = 0;
+            }
+            opts->filename = save;
+        }
+        closedir(dir);
+        return res;
+    }
+    FILE *fp = fopen(opts->filename, "r");
+    res = match_pattern_with_fp(fp, pattern, opts);
+    fclose(fp);
+    return res;
+}
+
 static struct option long_options[] = {
   {"color", required_argument, NULL, 'c'},
   {0, 0, 0, 0}  
@@ -354,7 +407,7 @@ int main(int argc, char* argv[]) {
     FILE **fp = fp_s;
     int fp_num = 1;
 
-    while ((opt = getopt_long(argc, argv, "oE:", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "orE:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'o':
                 opts.only_matching = true;
@@ -364,6 +417,9 @@ int main(int argc, char* argv[]) {
                 break;
             case 'c':
                 color = optarg;
+                break;
+            case 'r':
+                opts.recursive = true;
                 break;
             default:
                 return 1;
@@ -377,24 +433,28 @@ int main(int argc, char* argv[]) {
     }
 
     if (optind < argc) {
-        fp_num = argc - optind;
-        fp = malloc(fp_num * sizeof(*fp));
-        for (int i = 0; i < fp_num; i++) {
-            fp[i] = fopen(argv[optind + i], "r");
+        if (!opts.recursive) {
+            fp_num = argc - optind;
+            fp = malloc(fp_num * sizeof(*fp));
+            for (int i = 0; i < fp_num; i++) {
+                fp[i] = fopen(argv[optind + i], "r");
+            }
+        } else {
+            for (int i = 0; i < argc - optind; i++) {
+                opts.filename = argv[optind + i];
+                if (match_pattern_recursive(pattern, &opts) == 0) {
+                    res = 0;
+                }
+            }
+            return res;
         }
     }
 
-    char input_line[1024];
     for (int i = 0; i < fp_num; i++) {
         opts.filename = (fp_num > 1 && optind < argc) ? argv[optind + i] : NULL;
-        while (fgets(input_line, sizeof(input_line), fp[i]) != NULL) {
-            // Remove trailing newline
-            input_line[strcspn(input_line, "\n")] = '\0';
-            if (match_pattern(input_line, pattern, &opts)) {
-                res = 0;
-            }
+        if (match_pattern_with_fp(fp[i], pattern, &opts) == 0) {
+            res = 0;
         }
-
     }
     if (fp != fp_s) {
         free(fp);
