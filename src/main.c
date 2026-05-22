@@ -33,6 +33,13 @@ typedef struct {
     const char *match_end;
 } Pattern;
 
+typedef struct {
+    bool only_matching;
+    bool use_color;
+    const char *filename;
+    bool *matched;
+} GrepOpts;
+
 static bool contains(const char *group, char c) {
     while (*group) {
         if (c == *group++) {
@@ -263,15 +270,15 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
     }
 }
 
-bool match_chain(const char *input_line, Pattern *chain, size_t chain_size, bool only_match, bool *matched) {
+bool match_chain(const char *input_line, Pattern *chain, size_t chain_size, GrepOpts *opts) {
     int input_len = strlen(input_line);
     bool res = false;
     for (int i = 0; i <= input_len;) {
         if (match_chain_start(input_line + i, input_line, chain, chain_size)) {
-            if (only_match) {
+            if (opts->only_matching) {
                 printf_match_chain(chain, chain_size);
             }
-            fill_chain_matched(chain, chain_size, matched, input_line);
+            fill_chain_matched(chain, chain_size, opts->matched, input_line);
             const char *max_end = input_line + i;
             for (int j = 0; j < chain_size; j++) {
                 if (chain[j].match_end && chain[j].match_end >= max_end) {
@@ -300,30 +307,27 @@ static void print_matched_with_color(bool *matched, const char *input_line) {
     putchar('\n');
 }
 
-bool match_pattern(const char* input_line, const char* pattern, bool only_matching, const char *color) {
+bool match_pattern(const char* input_line, const char* pattern, GrepOpts *opts) {
     size_t chain_size;
-    bool use_color = false;
-    bool *matched = NULL;
-    if (strcmp(color, "always") == 0) {
-        use_color = true;
-    } else if (strcmp(color, "auto") == 0) {
-        use_color = isatty(STDOUT_FILENO);
-    }
-    if (use_color) {
-        matched = calloc(1, strlen(input_line) * sizeof(*matched));
+    if (opts->use_color) {
+        opts->matched = calloc(1, strlen(input_line) * sizeof(*opts->matched));
     }
     Pattern *chain = parse_pattern_chain(pattern, &chain_size);
-    bool res = match_chain(input_line, chain, chain_size, only_matching, matched);
+    bool res = match_chain(input_line, chain, chain_size, opts);
     if (res) {
-        if (only_matching) {
+        const char *prefix = opts->filename ? opts->filename : "";
+        const char *sep = opts->filename ? ":" : "";
+        if (opts->only_matching) {
             // already printed in match_chain
-        } else if (matched != NULL) {
-            print_matched_with_color(matched, input_line);
+        } else if (opts->matched != NULL) {
+            printf("%s%s", prefix, sep);
+            print_matched_with_color(opts->matched, input_line);
         } else {
-            printf("%s\n", input_line);
+            printf("%s%s%s\n", prefix, sep, input_line);
         }
     }
-    free(matched);
+    free(opts->matched);
+    opts->matched = NULL;
     free_chain(chain, chain_size);
     return res;
 }
@@ -342,16 +346,18 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Logs from your program will appear here\n");
 
     int opt;
-    bool only_matching = false;
+    GrepOpts opts = {0};
     const char* pattern;
     int res = 1;
     const char *color = "never";
-    FILE *fp = stdin;
+    FILE *fp_s[1] = {stdin};
+    FILE **fp = fp_s;
+    int fp_num = 1;
 
     while ((opt = getopt_long(argc, argv, "oE:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'o':
-                only_matching = true;
+                opts.only_matching = true;
                 break;
             case 'E':
                 pattern = optarg;
@@ -364,22 +370,34 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (strcmp(color, "always") == 0) {
+        opts.use_color = true;
+    } else if (strcmp(color, "auto") == 0) {
+        opts.use_color = isatty(STDOUT_FILENO);
+    }
+
     if (optind < argc) {
-        fp = fopen(argv[optind], "r");
+        fp_num = argc - optind;
+        fp = malloc(fp_num * sizeof(*fp));
+        for (int i = 0; i < fp_num; i++) {
+            fp[i] = fopen(argv[optind + i], "r");
+        }
     }
 
     char input_line[1024];
-    while (true) {
-        if (fgets(input_line, sizeof(input_line), fp) == NULL) {
-            return res;
+    for (int i = 0; i < fp_num; i++) {
+        opts.filename = (fp_num > 1 && optind < argc) ? argv[optind + i] : NULL;
+        while (fgets(input_line, sizeof(input_line), fp[i]) != NULL) {
+            // Remove trailing newline
+            input_line[strcspn(input_line, "\n")] = '\0';
+            if (match_pattern(input_line, pattern, &opts)) {
+                res = 0;
+            }
         }
-    
-        // Remove trailing newline
-        input_line[strcspn(input_line, "\n")] = '\0';
-    
-        if (match_pattern(input_line, pattern, only_matching, color)) {
-            res = 0;
-        }
+
+    }
+    if (fp != fp_s) {
+        free(fp);
     }
     return res;
 }
