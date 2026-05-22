@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <linux/limits.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -21,6 +22,7 @@ typedef enum {
     PatternTypeWildcard,
     PatternTypeZeroOrMore,
     PatternTypeAlternation,
+    PatternTypeExactly,
     PatternTypeStart,
     PatternTypeEnd,
     PatternTypeMax,
@@ -33,6 +35,7 @@ typedef struct {
        char ch;
        char *group;
     } v;
+    int match_times;
     const char *match_start;
     const char *match_end;
 } Pattern;
@@ -110,8 +113,8 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         } else if (*pattern == '?') {
             if (chain_size_t > 0) {
                 chain[chain_size_t - 1].type = PatternTypeZeroOrOne;
-                pattern++;
             }           
+            pattern++;
         } else if (*pattern == '.') {
             chain[chain_size_t].type = PatternTypeWildcard;
             chain[chain_size_t].basetype = chain[chain_size_t].type;
@@ -120,8 +123,8 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         } else if (*pattern == '*') {
             if (chain_size_t > 0) {
                 chain[chain_size_t - 1].type = PatternTypeZeroOrMore;
-                pattern++;
             }
+            pattern++;
         } else if (*pattern == '(') {
             ++pattern;
             const char *alter_s = pattern;
@@ -133,11 +136,28 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
                 alter_len = pattern - alter_s;
                 char *group = calloc(1, alter_len + 1);
                 memcpy(group, alter_s, alter_len);
-                chain[chain_size_t].type = PatternTypeAlternation;
-                chain[chain_size_t].basetype = chain[chain_size_t].type;
+                chain[chain_size_t].type = chain[chain_size_t].basetype = PatternTypeAlternation;
                 chain[chain_size_t++].v.group = group;
+            }
+            pattern++;
+        } else if (*pattern == '{') {
+            ++pattern;
+            const char *times_s = pattern;
+            size_t times_len = 0;
+            while (*pattern && *pattern != '}') {
                 pattern++;
             }
+            if (*pattern == '}') {
+                if (chain_size_t > 0) {
+                    times_len = pattern - times_s;
+                    char *times = calloc(1, times_len + 1);
+                    memcpy(times, times_s, times_len);
+                    chain[chain_size_t - 1].type = PatternTypeExactly;
+                    chain[chain_size_t - 1].match_times = atoi(times);
+                    free(times);
+                }
+            }
+            pattern++;
         } else {
             chain[chain_size_t].type = PatternTypeChar;
             chain[chain_size_t].basetype = chain[chain_size_t].type;
@@ -260,6 +280,23 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
                 if (match_chain_start(p, line_start, chain + 1, chain_size - 1)) return true;
             }
             return false;
+        }
+
+        case PatternTypeExactly: {
+            const char *p = input_line;
+            for (int i = 0; i < chain->match_times; i++) {
+                if (chain->basetype == PatternTypeAlternation) {
+                    const char *next = match_alternation(p, chain->v.group);
+                    if (!next) return false;
+                    p = next;
+                } else {
+                    if (!*p || !match_chain_base_type(*p, chain)) return false;
+                    p++;
+                }
+            }
+            chain->match_start = input_line;
+            chain->match_end = p - 1;
+            return match_chain_start(p, line_start, chain + 1, chain_size - 1);
         }
 
         case PatternTypeZeroOrMore: {
