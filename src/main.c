@@ -192,18 +192,19 @@ const char *match_alternation(const char *input_line, char *alternation) {
 
 bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size) {
     if (chain_size == 0) return true;
+    chain->match_start = NULL;
 
     switch (chain->type) {
         case PatternTypeEnd:
             return *input_line == '\0';
 
         case PatternTypeZeroOrOne:
-            if (match_chain_start(input_line, chain + 1, chain_size - 1)) {
-                return true; 
-            }
             if (*input_line && match_chain_base_type(*input_line, chain)) {
                 chain->match_start = chain->match_end = input_line;
                 return match_chain_start(input_line + 1, chain + 1, chain_size - 1);
+            }
+            if (match_chain_start(input_line, chain + 1, chain_size - 1)) {
+                return true; 
             }
             return false;
 
@@ -237,14 +238,18 @@ bool match_chain_start(const char *input_line, Pattern *chain, size_t chain_size
     }
 }
 
-bool match_chain(const char *input_line, Pattern *chain, size_t chain_size) {
+bool match_chain(const char *input_line, Pattern *chain, size_t chain_size, bool only_match) {
     int input_len = strlen(input_line);
+    bool res = false;
     for (int i = 0; i <= input_len; i++) {
         if (match_chain_start(input_line + i, chain, chain_size)) {
-            return true;
+            if (only_match) {
+                printf_match_chain(chain, chain_size);
+            }
+            res = true;
         }
     }
-    return false;
+    return res;
 }
 
 bool match_pattern(const char* input_line, const char* pattern, bool only_matching) {
@@ -259,13 +264,13 @@ bool match_pattern(const char* input_line, const char* pattern, bool only_matchi
     if (anchor) {
         res = match_chain_start(input_line, chain, chain_size);
     } else {
-        res = match_chain(input_line, chain, chain_size);
+        res = match_chain(input_line, chain, chain_size, only_matching);
     }
     if (res) {
-        if (only_matching) {
-            printf_match_chain(chain, chain_size);
-        } else {
+        if (!only_matching) {
             printf("%s\n", input_line);
+        } else if (anchor) {
+            printf_match_chain(chain, chain_size);
         }
     }
     free_chain(chain, chain_size);
