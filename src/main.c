@@ -26,19 +26,30 @@ typedef enum {
     PatternTypeMax,
 } PatternType;
 
+typedef struct Pattern Pattern;
+
 typedef struct {
+    Pattern *chain;
+    size_t chain_size;
+} Branch;
+
+struct Pattern {
     PatternType type;
     PatternType basetype;
     union {
        char ch;
        char *group;
+       struct {
+           Branch *branches;
+           int branch_count;
+       } alt;
     } v;
     int min_times;
-    int max_times; // -1 = unlimited
-    int group_num; // 0 = not a capture group, 1-9 = capture group number
+    int max_times;
+    int group_num;
     const char *match_start;
     const char *match_end;
-} Pattern;
+};
 
 typedef struct {
     bool only_matching;
@@ -52,13 +63,54 @@ const char *capture_group_start[10];
 const char *capture_group_end[10];
 int capture_group_count;
 
+static void free_chain(Pattern *chain, size_t chain_size);
+Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size);
+
+static void free_branches(Branch *branches, int count) {
+    for (int i = 0; i < count; i++) {
+        free_chain(branches[i].chain, branches[i].chain_size);
+    }
+    free(branches);
+}
+
 static bool contains(const char *group, char c) {
     while (*group) {
         if (c == *group++) {
             return true;
         }
     }
-    return false;   
+    return false;
+}
+
+static int split_branches(const char *content, size_t len, char ***out_branches) {
+    int cap = 4, count = 0;
+    char **branches = malloc(cap * sizeof(char*));
+    const char *bs = content;
+    for (size_t i = 0; i <= len; i++) {
+        if (i < len && content[i] == '\\') { i++; continue; }
+        if (i < len && content[i] == '[') {
+            i++;
+            if (i < len && content[i] == '^') i++;
+            while (i < len && content[i] != ']') { if (content[i] == '\\') i++; i++; }
+            continue;
+        }
+        if (i < len && content[i] == '(') {
+            int d = 1; i++;
+            while (i < len && d > 0) { if (content[i] == '(') d++; else if (content[i] == ')') d--; i++; }
+            i--;
+            continue;
+        }
+        if (content[i] == '|' || i == len) {
+            int blen = content + i - bs;
+            if (count + 1 > cap) { cap *= 2; branches = realloc(branches, cap * sizeof(char*)); }
+            branches[count] = calloc(1, blen + 1);
+            memcpy(branches[count], bs, blen);
+            count++;
+            bs = content + i + 1;
+        }
+    }
+    *out_branches = branches;
+    return count;
 }
 
 Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
@@ -138,17 +190,31 @@ Pattern *parse_pattern_chain(const char *pattern, size_t *chain_size) {
         } else if (*pattern == '(') {
             ++pattern;
             const char *alter_s = pattern;
-            size_t alter_len = 0;
-            while (*pattern && *pattern != ')') {
-                pattern++;
+            int depth = 1;
+            while (*pattern && depth > 0) {
+                if (*pattern == '\\') { pattern++; if (*pattern) pattern++; continue; }
+                if (*pattern == '(') depth++;
+                else if (*pattern == ')') depth--;
+                if (depth > 0) pattern++;
             }
             if (*pattern == ')') {
-                alter_len = pattern - alter_s;
-                char *group = calloc(1, alter_len + 1);
-                memcpy(group, alter_s, alter_len);
+                size_t alter_len = pattern - alter_s;
+                int my_group = ++capture_group_count;
+                char **branch_strs;
+                int branch_count = split_branches(alter_s, alter_len, &branch_strs);
+                Branch *branches = malloc(branch_count * sizeof(Branch));
+                for (int b = 0; b < branch_count; b++) {
+                    size_t sub_size;
+                    branches[b].chain = parse_pattern_chain(branch_strs[b], &sub_size);
+                    branches[b].chain_size = sub_size;
+                    free(branch_strs[b]);
+                }
+                free(branch_strs);
                 chain[chain_size_t].type = chain[chain_size_t].basetype = PatternTypeAlternation;
-                chain[chain_size_t].group_num = ++capture_group_count;
-                chain[chain_size_t++].v.group = group;
+                chain[chain_size_t].group_num = my_group;
+                chain[chain_size_t].v.alt.branches = branches;
+                chain[chain_size_t].v.alt.branch_count = branch_count;
+                chain_size_t++;
             }
             pattern++;
         } else if (*pattern == '{') {
@@ -217,12 +283,16 @@ static void printf_match_chain(Pattern *chain, size_t chain_size) {
 
 static void free_chain(Pattern *chain, size_t chain_size) {
     for (int i = 0; i < chain_size; i++) {
-        if (chain[i].basetype == PatternTypeGroup || chain[i].basetype == PatternTypeGroupReverse || chain[i].basetype == PatternTypeAlternation) {
+        if (chain[i].basetype == PatternTypeGroup || chain[i].basetype == PatternTypeGroupReverse) {
             free(chain[i].v.group);
+        } else if (chain[i].basetype == PatternTypeAlternation) {
+            free_branches(chain[i].v.alt.branches, chain[i].v.alt.branch_count);
         }
     }
     free(chain);
 }
+
+bool match_chain_start(const char *input_line, const char *line_start, Pattern *chain, size_t chain_size);
 
 bool match_chain_base_type(char ch, Pattern *chain) {
     bool res = false;
@@ -251,38 +321,31 @@ bool match_chain_base_type(char ch, Pattern *chain) {
     return res;
 }
 
-bool match_chain_start(const char *input_line, const char *line_start, Pattern *chain, size_t chain_size);
-
-const char *match_group(const char *input_line, const char *group_pattern) {
-    int len = strlen(group_pattern);
-    const char *branch_s = group_pattern;
-    for (int i = 0; i <= len; i++) {
-        if (group_pattern[i] == '|' || group_pattern[i] == '\0') {
-            int branch_len = group_pattern + i - branch_s;
-            char *branch = calloc(1, branch_len + 1);
-            memcpy(branch, branch_s, branch_len);
-            size_t sub_size;
-            Pattern *sub = parse_pattern_chain(branch, &sub_size);
-            free(branch);
-            if (match_chain_start(input_line, input_line, sub, sub_size)) {
-                const char *end = input_line;
-                for (int j = 0; j < sub_size; j++) {
-                    if (sub[j].match_end && sub[j].match_end >= end)
-                        end = sub[j].match_end + 1;
+const char *match_one_unit(const char *input, Pattern *p) {
+    if (p->basetype == PatternTypeAlternation) {
+        int saved_cg = capture_group_count;
+        capture_group_count = p->group_num;
+        for (int b = 0; b < p->v.alt.branch_count; b++) {
+            Branch *br = &p->v.alt.branches[b];
+            if (match_chain_start(input, input, br->chain, br->chain_size)) {
+                const char *end = input;
+                for (int j = 0; j < br->chain_size; j++) {
+                    if (br->chain[j].match_start) p->match_start = br->chain[j].match_start;
+                    if (br->chain[j].match_end && br->chain[j].match_end >= end)
+                        end = br->chain[j].match_end + 1;
                 }
-                free_chain(sub, sub_size);
+                p->match_end = end - 1;
+                if (p->group_num > 0) {
+                    capture_group_start[p->group_num] = p->match_start;
+                    capture_group_end[p->group_num] = p->match_end;
+                }
+                capture_group_count = saved_cg;
                 return end;
             }
-            free_chain(sub, sub_size);
-            branch_s = group_pattern + i + 1;
         }
+        capture_group_count = saved_cg;
+        return NULL;
     }
-    return NULL;
-}
-
-const char *match_one_unit(const char *input, Pattern *p) {
-    if (p->basetype == PatternTypeAlternation)
-        return match_group(input, p->v.group);
     if (!*input || !match_chain_base_type(*input, p)) return NULL;
     return input + 1;
 }
@@ -325,17 +388,59 @@ bool match_chain_start(const char *input_line, const char *line_start, Pattern *
         }
 
         case PatternTypeAlternation: {
-            const char *next = match_group(input_line, chain->v.group);
-            if (next == NULL) {
-                return false;
+            int saved_cg = capture_group_count;
+            capture_group_count = chain->group_num;
+            size_t rest = chain_size - 1;
+            for (int b = 0; b < chain->v.alt.branch_count; b++) {
+                Branch *br = &chain->v.alt.branches[b];
+                const char *saved_cap_start = capture_group_start[chain->group_num];
+                const char *saved_cap_end = capture_group_end[chain->group_num];
+
+                if (match_chain_start(input_line, line_start, br->chain, br->chain_size)) {
+                    const char *branch_end = input_line;
+                    const char *branch_start = NULL;
+                    for (int j = 0; j < br->chain_size; j++) {
+                        if (br->chain[j].match_start && !branch_start)
+                            branch_start = br->chain[j].match_start;
+                        if (br->chain[j].match_end && br->chain[j].match_end + 1 > branch_end)
+                            branch_end = br->chain[j].match_end + 1;
+                    }
+                    if (chain->group_num > 0) {
+                        capture_group_start[chain->group_num] = branch_start;
+                        capture_group_end[chain->group_num] = branch_end - 1;
+                    }
+
+                    size_t total = br->chain_size + rest;
+                    Pattern *comb = malloc(total * sizeof(Pattern));
+                    memcpy(comb, br->chain, br->chain_size * sizeof(Pattern));
+                    memcpy(comb + br->chain_size, chain + 1, rest * sizeof(Pattern));
+                    bool ok = match_chain_start(input_line, line_start, comb, total);
+                    if (ok) {
+                        const char *end = input_line;
+                        chain->match_start = NULL;
+                        for (int j = 0; j < br->chain_size; j++) {
+                            if (comb[j].match_start && !chain->match_start)
+                                chain->match_start = comb[j].match_start;
+                            if (comb[j].match_end && comb[j].match_end >= end)
+                                end = comb[j].match_end + 1;
+                        }
+                        chain->match_end = end - 1;
+                        if (chain->group_num > 0) {
+                            capture_group_start[chain->group_num] = chain->match_start;
+                            capture_group_end[chain->group_num] = chain->match_end;
+                        }
+                        memcpy(chain + 1, comb + br->chain_size, rest * sizeof(Pattern));
+                        free(comb);
+                        capture_group_count = saved_cg;
+                        return true;
+                    }
+                    free(comb);
+                    capture_group_start[chain->group_num] = saved_cap_start;
+                    capture_group_end[chain->group_num] = saved_cap_end;
+                }
             }
-            chain->match_start = input_line;
-            chain->match_end = next - 1;
-            if (chain->group_num > 0) {
-                capture_group_start[chain->group_num] = chain->match_start;
-                capture_group_end[chain->group_num] = chain->match_end;
-            }
-            return match_chain_start(next, line_start, chain + 1, chain_size - 1);
+            capture_group_count = saved_cg;
+            return false;
         }
 
         case PatternTypeBackReference: {
@@ -407,7 +512,6 @@ bool match_pattern(const char* input_line, const char* pattern, GrepOpts *opts) 
         const char *prefix = opts->filename ? opts->filename : "";
         const char *sep = opts->filename ? ":" : "";
         if (opts->only_matching) {
-            // already printed in match_chain
         } else if (opts->matched != NULL) {
             printf("%s%s", prefix, sep);
             print_matched_with_color(opts->matched, input_line);
